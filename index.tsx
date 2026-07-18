@@ -2,40 +2,19 @@
  * Vencord, a Discord client mod
  * Copyright (c) 2024 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
- *
- * SilentCall
- * ─────────
- * Toggle silent calls via:
- *   • Chat bar button (phone icon, green = ON, grey = OFF)
- *   • Right-click DM / Group DM → checkbox menu item
- *   • /silentcall slash command
- *
- * Confirmed working: blocks POST /call/ring via XHR patch.
- * ChatBarButton API usage matches D3SOX/vc-silentTypingEnhanced pattern.
  */
 
-import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
+import { addChatBarButton, ChatBarButton, removeChatBarButton } from "@api/ChatButtons";
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { findByPropsLazy } from "@webpack";
-import {
-    ChannelStore,
-    Menu,
-    React,
-    Toasts,
-    UserStore,
-} from "@webpack/common";
-
-const CallActions = findByPropsLazy("startCall", "stopRinging");
-
-// ─── Settings ─────────────────────────────────────────────────────────────────
+import { Menu, React } from "@webpack/common";
 
 const settings = definePluginSettings({
     isEnabled: {
         type: OptionType.BOOLEAN,
-        description: "Silent call mode — nobody gets rung when you join",
+        description: "Block call ringing",
         default: false,
     },
     showIcon: {
@@ -46,103 +25,84 @@ const settings = definePluginSettings({
     },
 });
 
-// ─── XHR patch ────────────────────────────────────────────────────────────────
-
-let _origOpen: typeof XMLHttpRequest.prototype.open | null = null;
-let _origSend: typeof XMLHttpRequest.prototype.send | null = null;
+let origOpen: typeof XMLHttpRequest.prototype.open | null = null;
+let origSend: typeof XMLHttpRequest.prototype.send | null = null;
 
 function installXhrPatch() {
-    if (_origOpen) return;
-    _origOpen = XMLHttpRequest.prototype.open;
-    _origSend = XMLHttpRequest.prototype.send;
-    const origOpen = _origOpen;
-    const origSend = _origSend;
-
+    if (origOpen) return;
+    origOpen = XMLHttpRequest.prototype.open;
+    origSend = XMLHttpRequest.prototype.send;
+    const _open = origOpen, _send = origSend;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
         this._scMethod = method;
         this._scUrl = String(url);
-        return origOpen.apply(this, arguments as any);
+        return _open.apply(this, arguments as any);
     };
-
     XMLHttpRequest.prototype.send = function (body?) {
-        if (
-            settings.store.isEnabled &&
-            this._scMethod?.toUpperCase() === "POST" &&
-            this._scUrl?.includes("/call/ring")
-        ) {
-            console.debug("[SilentCall] Blocked POST /call/ring");
+        if (settings.store.isEnabled && this._scMethod === "POST" && this._scUrl?.includes("/call/ring")) {
+            console.debug("[SilentCall] blocked /call/ring");
             return;
         }
-        return origSend.apply(this, arguments as any);
+        return _send.apply(this, arguments as any);
     };
 }
 
 function uninstallXhrPatch() {
-    if (!_origOpen) return;
-    XMLHttpRequest.prototype.open = _origOpen;
-    XMLHttpRequest.prototype.send = _origSend!;
-    _origOpen = null;
-    _origSend = null;
+    if (!origOpen) return;
+    XMLHttpRequest.prototype.open = origOpen;
+    XMLHttpRequest.prototype.send = origSend!;
+    origOpen = origSend = null;
 }
 
-// ─── Toggle ───────────────────────────────────────────────────────────────────
+const toggle = () => { settings.store.isEnabled = !settings.store.isEnabled; };
 
-function toggle() {
-    settings.store.isEnabled = !settings.store.isEnabled;
-}
-
-// ─── Chat bar button ──────────────────────────────────────────────────────────
-
-// Simple phone SVG icon
-function PhoneIcon({ enabled }: { enabled: boolean; }) {
+// always green phone — thick red bar overlaid when disabled
+function PhoneIcon({ on }: { on: boolean; }) {
     return (
-        <svg width="20" height="20" viewBox="0 0 24 24" style={{ overflow: "visible" }}>
+        <svg width="24" height="24" viewBox="0 0 24 24">
+            {/* phone handset — always green */}
             <path
-                fill="currentColor"
-                d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"
+                fill="var(--green-360)"
+                d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C9.6 21 3 14.4 3 6c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.3 1l-2.2 2.2z"
             />
-            {!enabled && (
-                <line
-                    x1="3" y1="3" x2="21" y2="21"
-                    stroke="var(--status-danger)"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
+            {/* thick red diagonal bar — only when disabled */}
+            {!on && (
+                <rect
+                    x="11.25"
+                    y="1"
+                    width="3"
+                    height="22"
+                    rx="1.5"
+                    fill="var(--red-400)"
+                    transform="rotate(45 12 12)"
                 />
             )}
         </svg>
     );
 }
 
-const SilentCallButton: ChatBarButtonFactory = ({ isMainChat }) => {
+const SilentCallButton: ChatBarButton = ({ isMainChat }) => {
     const { isEnabled, showIcon } = settings.use(["isEnabled", "showIcon"]);
     if (!isMainChat || !showIcon) return null;
 
     return (
         <ChatBarButton
-            tooltip={isEnabled ? "Silent Call ON — click to disable" : "Silent Call OFF — click to enable"}
+            tooltip={isEnabled ? "Silent Call: ON" : "Silent Call: OFF"}
             onClick={toggle}
-            buttonProps={{
-                style: {
-                    color: isEnabled ? "var(--green-360)" : "var(--interactive-muted)",
-                    padding: "0 4px",
-                },
-            }}
+            buttonProps={{ style: { padding: "0 2px" } }}
         >
-            <PhoneIcon enabled={isEnabled} />
+            <PhoneIcon on={isEnabled} />
         </ChatBarButton>
     );
 };
 
-// ─── Context menu ─────────────────────────────────────────────────────────────
-
-const patchContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
+const patchCtxMenu: NavContextMenuPatchCallback = (children, { channel }) => {
     if (!channel || (channel.type !== 1 && channel.type !== 3)) return;
-
     children.push(
         <Menu.MenuSeparator key="sc-sep" />,
         <Menu.MenuCheckboxItem
-            key="sc-toggle"
-            id="vc-silent-call-toggle"
+            key="sc-item"
+            id="vc-silent-call"
             label="Silent Call"
             checked={settings.store.isEnabled}
             action={toggle}
@@ -150,47 +110,41 @@ const patchContextMenu: NavContextMenuPatchCallback = (children, { channel }) =>
     );
 };
 
-// ─── Plugin ───────────────────────────────────────────────────────────────────
-
 export default definePlugin({
     name: "SilentCall",
-    description: "Join DM / Group DM calls without ringing anyone. Toggle via chat bar icon or right-click menu.",
-    authors: [{ name: "k1ng_op", id: 641266820187160576 }],
+    description: "Join DM/Group DM calls without ringing anyone.",
+    authors: [{ name: "you", id: 0n }],
     settings,
-
-    // Required for ChatBarButton to work
     dependencies: ["ChatInputButtonAPI"],
 
     contextMenus: {
-        "user-context": patchContextMenu,
-        "gdm-context": patchContextMenu,
+        "user-context": patchCtxMenu,
+        "gdm-context": patchCtxMenu,
     },
 
-    // Correct API: chatBarButton object with render function
-    chatBarButton: {
-        render: SilentCallButton,
-    },
-
-    commands: [
-        {
-            name: "silentcall",
-            description: "Toggle silent call mode (no ring when joining a call)",
-            inputType: ApplicationCommandInputType.BUILT_IN,
-            options: [],
-            execute(_, ctx) {
-                toggle();
-                sendBotMessage(ctx.channel.id, {
-                    content: `Silent Call is now **${settings.store.isEnabled ? "enabled" : "disabled"}**.`,
-                });
-            },
+    commands: [{
+        name: "silentcall",
+        description: "Toggle silent call mode",
+        inputType: ApplicationCommandInputType.BUILT_IN,
+        options: [],
+        execute(_, ctx) {
+            toggle();
+            sendBotMessage(ctx.channel.id, { content: `Silent Call **${settings.store.isEnabled ? "enabled" : "disabled"}**` });
         },
-    ],
+    }],
 
     start() {
-        installXhrPatch();
+        try {
+            installXhrPatch();
+        } catch (e) {
+            origOpen = origSend = null;
+            console.error("[SilentCall] xhr patch failed:", e);
+        }
+        if (settings.store.showIcon) addChatBarButton("SilentCall", SilentCallButton);
     },
 
     stop() {
+        removeChatBarButton("SilentCall");
         uninstallXhrPatch();
     },
 });
