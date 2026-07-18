@@ -113,7 +113,7 @@ const patchCtxMenu: NavContextMenuPatchCallback = (children, { channel }) => {
 export default definePlugin({
     name: "SilentCall",
     description: "Join DM/Group DM calls without ringing anyone.",
-    authors: [{ name: "you", id: 0n }],
+    authors: [{ name: "k1ng_op", id: 641266820187160576 }],
     settings,
     dependencies: ["ChatInputButtonAPI"],
 
