@@ -81,9 +81,10 @@ function PhoneIcon({ on }: { on: boolean; }) {
     );
 }
 
-const SilentCallButton: ChatBarButton = ({ isMainChat }) => {
+const SilentCallButton: ChatBarButton = ({ isMainChat, channel }) => {
     const { isEnabled, showIcon } = settings.use(["isEnabled", "showIcon"]);
-    if (!isMainChat || !showIcon) return null;
+    // only show in DMs (type 1) and Group DMs (type 3)
+    if (!isMainChat || !showIcon || (channel.type !== 1 && channel.type !== 3)) return null;
 
     return (
         <ChatBarButton
